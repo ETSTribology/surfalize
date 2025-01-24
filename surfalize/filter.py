@@ -176,13 +176,11 @@ class BandpassFilter:
         R = np.sqrt(X**2 + Y**2)
 
         # Create bandpass mask
-        mask = np.logical_and(R >= 1/surface.step_x / self.high_cutoff, R <= 1/surface.step_x / self.low_cutoff)
-
-        # Apply mask
-        fft_filtered = fft_surface * mask
+        mask = np.logical_and(R >= 1/surface.step_x/self.high_cutoff, 
+                            R <= 1/surface.step_x/self.low_cutoff)
 
         # Inverse Fourier transform
-        filtered_data = np.real(ifft2(ifftshift(fft_filtered)))
+        filtered_data = np.real(ifft2(ifftshift(fft_surface * mask)))
 
         if inplace:
             surface._set_data(data=filtered_data)
