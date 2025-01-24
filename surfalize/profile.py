@@ -3,6 +3,10 @@ import matplotlib.pyplot as plt
 from scipy.signal import find_peaks, find_peaks_cwt, savgol_filter
 from scipy.stats import skew, kurtosis
 from scipy.fft import fft, fftfreq
+from scipy.spatial.distance import euclidean, cityblock, minkowski, cosine
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.metrics.pairwise import cosine_similarity
+import plotly.graph_objects as go
 
 class Profile:
     """
@@ -333,6 +337,101 @@ class Profile:
         )
 
         return fig
+
+    def compare_profiles(self, other_profile, title="Profile Comparison"):
+        """
+        Compare two profiles using similarity metrics and generate visualizations.
+
+        Parameters
+        ----------
+        other_profile : Profile
+            Another Profile instance to compare with.
+        title : str, default "Profile Comparison"
+            Title for the comparison plots.
+
+        Returns
+        -------
+        scores : dict
+            Dictionary of similarity scores.
+        """
+        # Extract height data from both profiles
+        profile1 = self._data
+        profile2 = other_profile._data
+
+        # Ensure both profiles have the same length
+        if len(profile1) != len(profile2):
+            raise ValueError("Profiles must have the same length for comparison.")
+
+        # Calculate similarity metrics
+        scores = self._calculate_similarity_scores(profile1, profile2)
+
+        # Generate comparison plots
+        self._plot_comparison(profile1, profile2, scores, title)
+
+        return scores
+
+    def _calculate_similarity_scores(self, profile1, profile2):
+            """
+            Computes various similarity metrics between two profiles.
+    
+            Parameters
+            ----------
+            profile1 : array-like
+                First profile's height data.
+            profile2 : array-like
+                Second profile's height data.
+    
+            Returns
+            -------
+            scores : dict
+                Dictionary containing similarity metrics.
+            """
+            scores = {}
+            scores['MSE'] = mean_squared_error(profile1, profile2)
+            scores['RMSE'] = np.sqrt(scores['MSE'])
+            scores['MAE'] = mean_absolute_error(profile1, profile2)
+            scores['R2'] = r2_score(profile1, profile2)
+            scores['Euclidean'] = euclidean(profile1, profile2)
+            scores['Manhattan'] = cityblock(profile1, profile2)
+            scores['Minkowski_p3'] = minkowski(profile1, profile2, p=3)
+            cos_sim = cosine_similarity([profile1], [profile2])[0][0]
+            scores['Cosine_Similarity'] = cos_sim
+            return scores
+
+    def _plot_comparison(self, profile1, profile2, scores, title):
+        """
+        Generates comparison plots for two profiles.
+
+        Parameters
+        ----------
+        profile1 : array-like
+            First profile's height data.
+        profile2 : array-like
+            Second profile's height data.
+        scores : dict
+            Dictionary of similarity scores.
+        title : str
+            Title for the plots.
+        """
+        fig, axes = plt.subplots(2, 1, figsize=(10, 8))
+        x_self = np.linspace(0, self._length_um, len(profile1))
+        # Plot profiles
+        axes[0].plot(x_self, profile1, label='Current Profile')
+        axes[0].plot(x_self, profile2, label='Other Profile', alpha=0.7)
+        axes[0].set_xlabel('Position [µm]')
+        axes[0].set_ylabel('Height [µm]')
+        axes[0].legend()
+        axes[0].set_title('Profile Height Comparison')
+        # Plot scores
+        metric_names = list(scores.keys())
+        values = list(scores.values())
+        axes[1].bar(metric_names, values)
+        axes[1].set_xticklabels(metric_names, rotation=45, ha='right')
+        axes[1].set_ylabel('Score Value')
+        axes[1].set_title('Similarity Metrics')
+        plt.tight_layout()
+        plt.suptitle(title, y=1.02)
+        plt.show()
 
     def to_dict(self):
         """
