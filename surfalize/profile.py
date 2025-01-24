@@ -1,16 +1,53 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, find_peaks_cwt, savgol_filter
+from scipy.stats import skew, kurtosis
+from scipy.fft import fft, fftfreq
 
 class Profile:
+    """
+    Represents a 1D surface profile and provides methods to analyze surface roughness parameters.
 
-    def __init__(self, height_data, step, length_um):
-        self._data = height_data
+    Parameters
+    ----------
+    height_data : array-like
+        1D array of height measurements.
+    step : float
+        Spatial step between measurements (e.g., micrometers per step).
+    length_um : float
+        Total length of the profile in micrometers.
+    preprocess : bool, default False
+        If True, applies Savitzky-Golay smoothing to the data before analysis.
+    sg_window : int, default 9
+        Window length for Savitzky-Golay filter (must be odd).
+    sg_poly : int, default 3
+        Polynomial order for Savitzky-Golay filter.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from surfalize import Profile
+    >>> height = np.random.normal(0, 1, 1000)
+    >>> profile = Profile(height, step=0.1, length_um=100.0, preprocess=True)
+    >>> print(profile.Ra())
+    0.998
+    >>> profile.show()
+    """
+
+    def __init__(self, height_data, step, length_um, preprocess=False, sg_window=9, sg_poly=3):
+        self._data = np.array(height_data, dtype=float)
         self._step = step
         self._length_um = length_um
 
+        if preprocess:
+            if sg_window % 2 == 0:
+                sg_window += 1  # Ensure window length is odd
+            if sg_window > len(self._data):
+                sg_window = len(self._data) if len(self._data) % 2 != 0 else len(self._data) - 1
+            self._data = savgol_filter(self._data, window_length=sg_window, polyorder=sg_poly)
+
     def __repr__(self):
-        return f'{self.__class__.__name__}({self._length_um:.2f} µm)'
+        return f'{self.__class__.__name__}(Length: {self._length_um:.2f} µm)'
 
     def _repr_png_(self):
         """
@@ -20,45 +57,250 @@ class Profile:
         self.show()
 
     def period(self):
-        fft = np.abs(np.fft.fft(self._data))
-        freq = np.fft.fftfreq(self._data.shape[0], d=self._step)
-        peaks, properties = find_peaks(fft.flatten(), distance=10, prominence=10)
-        # Find the prominence of the peaks
-        prominences = properties['prominences']
-        # Sort in descendin'g order by computing sorting indices
-        sorted_indices = np.argsort(prominences)[::-1]
-        # Sort peaks in descending order
-        peaks_sorted = peaks[sorted_indices]
-        # Rearrange prominences based on the sorting of peaks
-        prominences_sorted = prominences[sorted_indices]
-        period = 1 / np.abs(freq[peaks_sorted[0]])
+        """
+        Estimates the dominant spatial period of the profile using FFT.
+
+        Returns
+        -------
+        period : float
+            Dominant period in micrometers.
+
+        Raises
+        ------
+        ValueError
+            If the profile data is flat or insufficient for period estimation.
+        """
+        fft_vals = np.abs(fft(self._data))
+        freq = fftfreq(len(self._data), d=self._step)
+
+        # Consider only positive frequencies
+        pos_mask = freq > 0
+        fft_vals = fft_vals[pos_mask]
+        freq = freq[pos_mask]
+
+        if len(fft_vals) == 0:
+            raise ValueError("Insufficient data for period estimation.")
+
+        peaks, properties = find_peaks(fft_vals, distance=10, prominence=np.max(fft_vals)*0.1)
+        if len(peaks) == 0:
+            raise ValueError("No significant peaks found in FFT for period estimation.")
+
+        dominant_freq = freq[peaks[np.argmax(properties['prominences'])]]
+        period = 1 / dominant_freq
         return period
 
     def Ra(self):
-        return np.abs(self._data - self._data.mean()).sum() / self._data.size
+        """
+        Calculates the arithmetic mean height (Ra).
+
+        Returns
+        -------
+        Ra : float
+            Arithmetic mean height.
+        """
+        return np.mean(np.abs(self._data - np.mean(self._data)))
 
     def Rq(self):
-        return np.sqrt(((self._data - self._data.mean()) ** 2).sum() / self._data.size)
+        """
+        Calculates the root mean square height (Rq).
+
+        Returns
+        -------
+        Rq : float
+            Root mean square height.
+        """
+        return np.sqrt(np.mean((self._data - np.mean(self._data)) ** 2))
 
     def Rp(self):
-        return (self._data - self._data.mean()).max()
+        """
+        Calculates the maximum peak height (Rp).
+
+        Returns
+        -------
+        Rp : float
+            Maximum peak height.
+        """
+        return np.max(self._data - np.mean(self._data))
 
     def Rv(self):
-        return np.abs((self._data - self._data.mean()).min())
+        """
+        Calculates the maximum valley depth (Rv).
+
+        Returns
+        -------
+        Rv : float
+            Maximum valley depth.
+        """
+        return np.abs(np.min(self._data - np.mean(self._data)))
 
     def Rz(self):
+        """
+        Calculates the ten-point height range (Rz).
+
+        Returns
+        -------
+        Rz : float
+            Ten-point height range.
+        """
         return self.Rp() + self.Rv()
 
     def Rsk(self):
-        return ((self._data - self._data.mean()) ** 3).sum() / self._data.size / self.Rq() ** 3
+        """
+        Calculates the skewness (Rsk) of the profile.
+
+        Returns
+        -------
+        Rsk : float
+            Skewness.
+        """
+        variance = np.var(self._data)
+        if variance < 1e-20:
+            return 0.0
+        return skew(self._data)
 
     def Rku(self):
-        return ((self._data - self._data.mean()) ** 4).sum() / self._data.size / self.Rq() ** 4
+        """
+        Calculates the kurtosis (Rku) of the profile.
 
-    def show(self):
-        fig, ax = plt.subplots(figsize=(10, 3))
-        ax.set_xlim(0, self._length_um)
-        ax.set_xlabel('x [µm]')
-        ax.set_ylabel('z [µm]')
-        ax.plot(np.linspace(0, self._length_um, self._data.size), self._data, c='k', lw=1)
+        Returns
+        -------
+        Rku : float
+            Kurtosis.
+        """
+        variance = np.var(self._data)
+        if variance < 1e-20:
+            return 0.0
+        return kurtosis(self._data, fisher=False)
+
+    def RSm(self):
+        """
+        Estimates the mean spacing between peaks (RSm) using continuous wavelet transform.
+
+        Returns
+        -------
+        RSm : float
+            Mean spacing between peaks in micrometers.
+        """
+        widths = np.arange(1, 20)
+        peaks = find_peaks_cwt(np.abs(self._data), widths=widths)
+        if len(peaks) > 1:
+            spacings = np.diff(peaks) * self._step
+            return np.mean(spacings)
+        else:
+            return 0.0
+
+    def Rdq(self):
+        """
+        Calculates the root mean square slope (Rdq) of the profile.
+
+        Returns
+        -------
+        Rdq : float
+            Root mean square slope.
+        """
+        slopes = np.diff(self._data) / self._step
+        return np.sqrt(np.mean(slopes ** 2))
+
+    def show(self, annotate_peaks=True):
+        """
+        Plots the profile with optional peak and valley annotations.
+
+        Parameters
+        ----------
+        annotate_peaks : bool, default True
+            If True, marks peaks and valleys on the plot.
+        """
+        fig, ax = plt.subplots(figsize=(10, 4))
+        x = np.linspace(0, self._length_um, self._data.size)
+        ax.plot(x, self._data, color='k', lw=1, label='Profile')
+        ax.set_xlabel('Position [µm]')
+        ax.set_ylabel('Height [µm]')
+        ax.set_title('1D Surface Profile')
+
+        if annotate_peaks:
+            peaks, _ = find_peaks(self._data, prominence=0.05 * np.max(self._data))
+            valleys, _ = find_peaks(-self._data, prominence=0.05 * np.abs(np.min(self._data)))
+            ax.plot(x[peaks], self._data[peaks], 'ro', label='Peaks')
+            ax.plot(x[valleys], self._data[valleys], 'bo', label='Valleys')
+            for peak in peaks:
+                ax.annotate(f'{self._data[peak]:.2f}', (x[peak], self._data[peak]),
+                            textcoords="offset points", xytext=(0,10), ha='center', color='red')
+            for valley in valleys:
+                ax.annotate(f'{self._data[valley]:.2f}', (x[valley], self._data[valley]),
+                            textcoords="offset points", xytext=(0,-15), ha='center', color='blue')
+
+        ax.legend()
+        plt.tight_layout()
         plt.show()
+
+    def apply_filter(self, filter_obj, inplace=False):
+        """
+        Applies a filter to the profile data.
+
+        Parameters
+        ----------
+        filter_obj : callable
+            A filter object with an `apply` method or callable that takes a Profile instance.
+        inplace : bool, default False
+            If True, modifies the current Profile instance. Otherwise, returns a new filtered Profile.
+
+        Returns
+        -------
+        filtered_profile : Profile or None
+            Returns a new Profile instance if `inplace=False`. Returns `None` if `inplace=True`.
+        """
+        if hasattr(filter_obj, 'apply'):
+            filtered = filter_obj.apply(self, inplace=inplace)
+            return filtered
+        elif callable(filter_obj):
+            filtered = filter_obj(self)
+            return filtered
+        else:
+            raise TypeError("filter_obj must have an 'apply' method or be callable.")
+
+    def calculate_material_ratio(self, percentile_low=10, percentile_high=80):
+        """
+        Calculates the material ratio at specified percentiles.
+
+        Parameters
+        ----------
+        percentile_low : float, default 10
+            Lower percentile for material ratio.
+        percentile_high : float, default 80
+            Upper percentile for material ratio.
+
+        Returns
+        -------
+        material_ratio_low : float
+            Height at the lower percentile.
+        material_ratio_high : float
+            Height at the upper percentile.
+        """
+        sorted_data = np.sort(self._data)
+        mr_low = np.percentile(sorted_data, percentile_low)
+        mr_high = np.percentile(sorted_data, percentile_high)
+        return mr_low, mr_high
+
+    def to_dict(self):
+        """
+        Compiles all calculated parameters into a dictionary.
+
+        Returns
+        -------
+        params : dict
+            Dictionary of all calculated roughness parameters.
+        """
+        return {
+            'Ra': self.Ra(),
+            'Rq': self.Rq(),
+            'Rp': self.Rp(),
+            'Rv': self.Rv(),
+            'Rz': self.Rz(),
+            'Rsk': self.Rsk(),
+            'Rku': self.Rku(),
+            'RSm': self.RSm(),
+            'Rdq': self.Rdq(),
+            'Period': self.period(),
+            'MaterialRatio_10': self.calculate_material_ratio()[0],
+            'MaterialRatio_80': self.calculate_material_ratio()[1],
+        }
