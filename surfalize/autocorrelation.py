@@ -9,100 +9,84 @@ from .mathutils import interpolate_line_on_2d_array, argmin_all, argmax_all, arg
 
 class AutocorrelationFunction(CachedInstance):
     """
-    Represents the 2d autocorrelation function of a Surface object and provides methods to calculate the autocorrelation
-    length Sal and texture aspect ratio Str.
+    Computes the 2D autocorrelation function of a Surface object and calculates 
+    autocorrelation length (Sal) and texture aspect ratio (Str).
 
     Parameters
     ----------
     surface : Surface
-        Surface object on which to calculate the 2d autocorrelation function.
+        The Surface object to analyze.
     """
+
     def __init__(self, surface):
         super().__init__()
-        # For now we level and center. In the future, we should replace that with lookups of booleans
-        # to avoid double computation
-        self._surface = surface
-        self._current_threshold = None
+        self.surface = surface.center()
         self.data = self.calculate_autocorrelation()
         self.center = np.array(self.data.shape) // 2
 
     def calculate_autocorrelation(self):
-        data = self._surface.center().data
-        data_fft = np.fft.fft2(data)
-        # Compute ACF from FFT and normalize
-        acf_data = np.fft.fftshift(np.fft.ifft2(data_fft * np.conj(data_fft)).real / data.size)
-        return acf_data
+        """Calculates the 2D autocorrelation function using FFT."""
+        data_fft = np.fft.fft2(self.surface.data)
+        acf = np.fft.ifft2(data_fft * np.conj(data_fft)).real
+        acf /= self.surface.data.size
+        return np.fft.fftshift(acf)
 
     @cache
-    def _calculate_decay_lengths(self, s):
+    def _calculate_decay_lengths(self, threshold_fraction):
         """
-        Calculates the decay lengths of the 2d autocorrelation function of the surface height data and
-        extracts the indices of the points of minimum and maximum decay.
+        Determines the shortest and longest decay lengths based on a threshold.
 
         Parameters
         ----------
-        s : float
-            threshold value below which the data is considered to be uncorrelated. The
-            point of fastest and slowest decay are calculated respective to the threshold
-            value, to which the autocorrelation function decays. The threshold s is a fraction
-            of the maximum value of the autocorrelation function.
+        threshold_fraction : float
+            Fraction of the maximum ACF value to set as the threshold.
 
         Returns
         -------
-        None
+        tuple of float
+            (shortest_decay_length, longest_decay_length)
         """
-        threshold = s * self.data.max()
-
+        threshold = threshold_fraction * self.data.max()
         mask = self.data > threshold
-        labels, _ = ndimage.label(mask)
-        region = labels == labels[self.center[0], self.center[1]]
-        edge = region ^ ndimage.binary_dilation(region, iterations=1)
+        labeled, num_features = ndimage.label(mask)
+        region = labeled == labeled[self.center[0], self.center[1]]
+        edge = region ^ ndimage.binary_dilation(region)
+
+        if not np.any(edge):
+            return 0.0, 0.0
 
         idx_edge = np.argwhere(edge)
-        distances_xy_px = idx_edge - self.center
-        step_array = np.array([self._surface.step_y, self._surface.step_x])
-        distances_xy_units = distances_xy_px * step_array
-        distances = np.linalg.norm(distances_xy_units, axis=1)
-        all_idx_min = idx_edge[argmin_all(distances)]
-        all_idx_max = idx_edge[argmax_all(distances)]
+        distances = np.linalg.norm((idx_edge - self.center) * np.array([self.surface.step_y, self.surface.step_x]), axis=1)
 
-        idx_min = all_idx_min[np.argmin(self.data[all_idx_min[:, 0], all_idx_min[:, 1]])]
-        idx_max = all_idx_max[np.argmin(self.data[all_idx_max[:, 0], all_idx_max[:, 1]])]
+        min_idx = idx_edge[argmin_all(distances)]
+        max_idx = idx_edge[argmax_all(distances)]
 
-        length_min = np.hypot(*((idx_min - self.center) * step_array))
-        length_max = np.hypot(*((idx_max - self.center) * step_array))
+        decay_lengths = self._interpolate_decay_length(min_idx, threshold), self._interpolate_decay_length(max_idx, threshold)
+        return decay_lengths
 
+    def _interpolate_decay_length(self, idx, threshold):
+        """Interpolates the decay length to the threshold value."""
+        length = np.hypot(*(idx - self.center) * np.array([self.surface.step_y, self.surface.step_x]))
         n_points = 1000
-        interpolated_line_x = np.linspace(0, length_min, n_points)
-        interpolated_line_y = interpolate_line_on_2d_array(self.data, self.center, idx_min, num_points=n_points)
-        shortest_decay_length = interpolated_line_x[argclosest(threshold, interpolated_line_y)]
-
-        interpolated_line_x = np.linspace(0, length_max, n_points)
-        interpolated_line_y = interpolate_line_on_2d_array(self.data, self.center, idx_max, num_points=n_points)
-        longest_decay_length = interpolated_line_x[argclosest(threshold, interpolated_line_y)]
-
-        return shortest_decay_length, longest_decay_length
-
+        interpolated_values = interpolate_line_on_2d_array(self.data, self.center, idx, num_points=n_points)
+        interpolated_lengths = np.linspace(0, length, n_points)
+        closest_idx = argclosest(threshold, interpolated_values)
+        return interpolated_lengths[closest_idx] if closest_idx < len(interpolated_lengths) else length
 
     @cache
     def Sal(self, s=0.2):
         """
-        Calculates the autocorrelation length Sal. Sal represents the horizontal distance of the f_ACF(tx,ty)
-        which has the fastest decay to a specified value s, with 0 < s < 1. s represents the fraction of the
-        maximum value of the autocorrelation function. The default value for s is 0.2 according to ISO 25178-3.
+        Calculates the autocorrelation length Sal.
 
         Parameters
         ----------
-        s : float
-            threshold value below which the data is considered to be uncorrelated. The
-            point of fastest and slowest decay are calculated respective to the threshold
-            value, to which the autocorrelation function decays. The threshold s is a fraction
-            of the maximum value of the autocorrelation function.
+        s : float, optional
+            Threshold fraction (default is 0.2).
 
         Returns
         -------
-        Sal : float
-            autocorrelation length.
+        float
+            Autocorrelation length Sal.
         """
         Sal, _ = self._calculate_decay_lengths(s)
         return Sal
@@ -110,41 +94,60 @@ class AutocorrelationFunction(CachedInstance):
     @cache
     def Str(self, s=0.2):
         """
-        Calculates the texture aspect ratio Str. Str represents the ratio of the horizontal distance of the f_ACF(tx,ty)
-        which has the fastest decay to a specified value s to the horizontal distance of the fACF(tx,ty) which has the
-        slowest decay to s, with 0 < s < 1. s represents the fraction of the maximum value of the autocorrelation
-        function. The default value for s is 0.2 according to ISO 25178-3.
+        Calculates the texture aspect ratio Str.
 
         Parameters
         ----------
-        s : float
-            threshold value below which the data is considered to be uncorrelated. The
-            point of fastest and slowest decay are calculated respective to the threshold
-            value, to which the autocorrelation function decays. The threshold s is a fraction
-            of the maximum value of the autocorrelation function.
+        s : float, optional
+            Threshold fraction (default is 0.2).
 
         Returns
         -------
-        Str : float
-            texture aspect ratio.
+        float
+            Texture aspect ratio Str.
         """
-        shortest_decay_length, longest_decay_length = self._calculate_decay_lengths(s)
-        Str = shortest_decay_length / longest_decay_length
-        return Str
+        Sal, Sll = self._calculate_decay_lengths(s)
+        return Sal / Sll if Sll != 0 else 0.0
 
     def plot_autocorrelation(self, ax=None, cmap='jet', show_cbar=True):
+        """
+        Plots the autocorrelation function.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            Axes object to plot on. Creates a new one if None.
+        cmap : str, optional
+            Colormap for the plot (default is 'jet').
+        show_cbar : bool, optional
+            Whether to display the colorbar (default is True).
+
+        Returns
+        -------
+        tuple
+            (Figure, Axes)
+        """
         if ax is None:
-            fig, ax = plt.subplots()
+            fig, ax = plt.subplots(figsize=(6, 5))
         else:
             fig = ax.figure
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        im = ax.imshow(self.acf_data, cmap=cmap, extent=(0, self._surface.width_um, 0, self._surface.height_um))
+
+        im = ax.imshow(
+            self.data,
+            cmap=cmap,
+            extent=(0, self.surface.width_um, 0, self.surface.height_um)
+        )
+
         if show_cbar:
-            fig.colorbar(im, cax=cax, label='z [µm²]')
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            fig.colorbar(im, cax=cax, label='ACF [µm²]')
         else:
-            cax.axis('off')
+            ax.figure.colorbar(im, ax=ax, label='ACF [µm²]')
+
         ax.set_xlabel('x [µm]')
         ax.set_ylabel('y [µm]')
+        ax.set_title('Autocorrelation Function')
+        plt.tight_layout()
 
         return fig, ax
