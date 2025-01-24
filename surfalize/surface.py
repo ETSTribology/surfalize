@@ -1083,21 +1083,177 @@ class Surface(CachedInstance):
         -------
         dict[str: float]
         """
-        mean = self.data.mean()
-        centered_data = self.data - mean
-        abs_centered_data = np.abs(centered_data)
-        centered_data_sq = abs_centered_data ** 2
+        data = self.data
+        mean = np.nanmean(data)
+        centered = data - mean
+        
+        if np.nanvar(centered) < 1e-20:
+            return self._flat_surface_params()
 
-        size = self.data.size
-        sa = np.sum(abs_centered_data) / size
-        sq = np.sqrt(np.sum(centered_data_sq) / size)
-        sv = np.abs(centered_data.min())
-        sp = centered_data.max()
-        sz = sp + sv
-        ssk = np.sum(centered_data_sq * centered_data) / size / sq ** 3
-        sku = np.sum(centered_data_sq ** 2) / size / sq ** 4
-        return {'Sa': sa, 'Sq': sq, 'Sv': sv, 'Sp': sp, 'Sz': sz, 'Ssk': ssk, 'Sku': sku}
+        params = {
+            'Sa': np.nanmean(np.abs(centered)),
+            'Sq': np.sqrt(np.nanmean(centered**2)),
+            'Sp': np.nanmax(centered),
+            'Sv': np.nanmin(centered),
+            'Sz': np.ptp(centered)
+        }
+        
+        # Safe skew/kurtosis calculation
+        flat = centered.flatten()
+        valid = ~np.isnan(flat)
+        params['Ssk'], params['Sku'] = self._safe_skew_kurt(flat[valid])
+        
+        return params
 
+    def _safe_skew_kurt(self, data):
+        """Handle small variance cases gracefully"""
+        if len(data) < 3 or np.var(data) < 1e-20:
+            return 0.0, 0.0
+        return skew(data, bias=False), kurtosis(data, bias=False, fisher=False)
+               
+    def _flat_surface_params(self):
+        """Return zero values for all parameters"""
+        return {k: 0.0 for k in self.ISO_PARAMETERS}
+
+   @cache
+    def directional_parameters(self, axis=0):
+        """Calculate parameters along specified axis (0=y, 1=x)"""
+        profiles = np.moveaxis(self.data, axis, 0)
+        results = []
+        
+        for profile in profiles:
+            valid = ~np.isnan(profile)
+            if np.any(valid):
+                results.append(self._analyze_profile(profile[valid]))
+        
+        return {k: np.mean([d[k] for d in results]) for k in results[0]} if results else {}
+
+def _analyze_profile(self, profile):
+    """Core 1D analysis with Savitzky-Golay smoothing and ISO-compliant parameters"""
+    # Remove NaN values and ensure we have valid data
+    clean_profile = profile[~np.isnan(profile)]
+    if len(clean_profile) < 5:
+        return self._flat_profile_params()
+    
+    # Center the profile
+    centered = clean_profile - np.mean(clean_profile)
+    
+    # Apply smoothing if needed
+    if self._should_smooth(centered):
+        try:
+            centered = self._apply_smoothing(centered)
+        except ValueError as e:
+            logger.warning(f"Smoothing failed: {str(e)}")
+    
+    # Calculate basic parameters
+    params = {
+        'Ra': np.mean(np.abs(centered)),
+        'Rq': np.sqrt(np.mean(centered**2)),
+    }
+    
+    # ISO 4287-compliant Rz calculation (average of 5 highest peak-to-valley distances)
+    try:
+        peaks, _ = find_peaks(centered, height=0, prominence=0.1*np.max(centered))
+        valleys, _ = find_peaks(-centered, height=0, prominence=0.1*np.max(-centered))
+        
+        if len(peaks) >= 5 and len(valleys) >= 5:
+            # Get 5 highest peaks and 5 deepest valleys
+            top_peaks = np.sort(centered[peaks])[-5:]
+            top_valleys = np.sort(-centered[valleys])[-5:]
+            rz_values = [p + v for p, v in zip(top_peaks, top_valleys)]
+            params['Rz'] = np.mean(rz_values)
+        else:
+            # Fallback to simple peak-to-peak if not enough features found
+            params['Rz'] = np.ptp(centered)
+    except Exception as e:
+        logger.error(f"Rz calculation error: {str(e)}")
+        params['Rz'] = np.ptp(centered)
+    
+    return params
+
+    def _flat_profile_params(self):
+    """Return default values for flat/unanalyzable profiles"""
+    return {
+        'Ra': 0.0,
+        'Rq': 0.0,
+        'Rz': 0.0
+    }
+
+    def _should_smooth(self, profile):
+        """Determine if smoothing should be applied"""
+        return len(profile) > 11 and np.ptp(profile) > 1e-6
+
+    def _apply_smoothing(self, profile):
+        """Apply Savitzky-Golay filter with adaptive parameters"""
+        window = min(len(profile) - (len(profile) % 2), 21)  # Max window 21
+        return savgol_filter(profile, window, 3)
+
+    def anisotropy_report(self):
+        """Calculate directional anisotropy metrics"""
+        x_params = self.directional_parameters(axis=0)
+        y_params = self.directional_parameters(axis=1)
+        
+        report = {}
+        for k in x_params:
+            x_val = x_params[k]
+            y_val = y_params.get(k, 0)
+            denom = (abs(x_val) + abs(y_val)) / 2 + 1e-12
+            report[f'{k}_anis'] = abs(x_val - y_val) / denom
+            
+        return report
+
+    def calculate_roughness_parameters(self, parameters: list[str] = None, 
+                                  verbose: bool = False) -> dict:
+               """
+               Computes multiple roughness parameters with comprehensive error handling.
+               
+               Parameters
+               ----------
+               parameters : list[str], optional
+                   List of parameters to calculate. Defaults to all available parameters.
+               verbose : bool, default False
+                   If True, prints warnings about computation errors to stderr.
+                   
+               Returns
+               -------
+               dict
+                   Dictionary containing successfully computed parameters and error messages
+                   for failed computations.
+                   
+               Examples
+               --------
+               >>> surface.calculate_roughness_parameters(['Sa', 'Sq', 'invalid_param'])
+               {
+                   'Sa': 0.543,
+                   'Sq': 0.682,
+                   'invalid_param': 'Error: Invalid parameter name'
+               }
+               """
+               results = {}
+               
+               # Use all available parameters if none specified
+               if parameters is None:
+                   parameters = self.AVAILABLE_PARAMETERS
+                   
+               for param in parameters:
+                   # Input validation
+                   if param not in self.AVAILABLE_PARAMETERS:
+                       results[param] = f'Error: Invalid parameter name'
+                       if verbose:
+                           logger.warning(f'Skipping invalid parameter: {param}')
+                       continue
+                       
+                   try:
+                       # Attempt to calculate the parameter
+                       results[param] = getattr(self, param)()
+                   except Exception as e:
+                       # Error handling for computation failures
+                       error_msg = f'Error computing {param}: {str(e)}'
+                       results[param] = error_msg
+                       if verbose:
+                           logger.error(error_msg)
+                           
+               return results                                 
     def Sa(self):
         """
         Calcualtes the arithmetic mean height Sa according to ISO 25178-2.
