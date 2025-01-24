@@ -281,6 +281,59 @@ class Profile:
         mr_high = np.percentile(sorted_data, percentile_high)
         return mr_low, mr_high
 
+     def plot_radar(self, param_list=None, title="1D Surface Parameters Radar"):
+        """
+        Creates a radar plot to visualize surface roughness parameters.
+
+        Parameters
+        ----------
+        param_list : list of str, optional
+            List of parameters to include in the radar plot. If None, defaults to all available parameters.
+        title : str, default "1D Surface Parameters Radar"
+            Title of the radar plot.
+
+        Returns
+        -------
+        fig : plotly.graph_objects.Figure
+            Interactive radar plot.
+        """
+        # Default parameters to include in the radar plot
+        if param_list is None:
+            param_list = ['Ra', 'Rq', 'Rp', 'Rv', 'Rz', 'Rsk', 'Rku', 'RSm', 'Rdq']
+
+        # Get parameter values
+        params = self.to_dict()
+        values = [params.get(p, 0) for p in param_list]
+
+        # Ensure the radar plot is closed by repeating the first value at the end
+        values += [values[0]]
+        param_list += [param_list[0]]
+
+        # Create radar plot
+        fig = go.Figure()
+
+        fig.add_trace(go.Scatterpolar(
+            r=values,
+            theta=param_list,
+            fill='toself',
+            name='Profile Parameters',
+            line=dict(color='blue')
+        ))
+
+        fig.update_layout(
+            polar=dict(
+                radialaxis=dict(
+                    visible=True,
+                    range=[0, max(values) * 1.1] if max(values) > 0 else [0, 1]
+                )
+            ),
+            title=title,
+            showlegend=True,
+            height=600
+        )
+
+        return fig
+
     def to_dict(self):
         """
         Compiles all calculated parameters into a dictionary.
